@@ -1,16 +1,16 @@
 # 1. Introduction
 
-**Machine Name:** Blackfield
-**Difficulty:** Hard
-**OS:** Windows
-**Author:** aas 
-**Release Date:**  06/06/2020
-**Date:**  11/26/2025
-
+**Machine Name:** Blackfield<br>
+**Difficulty:** Hard<br>
+**OS:** Windows<br>
+**Author:** aas <br>
+**Release Date:**  06/06/2020<br>
+**Date:**  11/26/2025<br>
+<br>
 # 2. Recon
 ## 2.1 Nmap Scan
 
-We start by doing an nmap scan of the host. 
+We start by doing an nmap scan of the host. <br>
 Based on the open ports, it looks like a regular AD Domain Controller with no web ports open:
 
 ```
@@ -87,7 +87,7 @@ Nmap done: 1 IP address (1 host up) scanned in 52.96 seconds
 
 ```
 
-We note the domain name, BLACKFIELD.local, and port 5985 (usually WinRM) open.
+We note the domain name, BLACKFIELD.local, and port 5985 (usually WinRM) open.<br>
 We add the domain name to our /etc/hosts file and start probing SMB with NetExec.
 
 ## 2.2 Port 445 - SMB
@@ -117,8 +117,8 @@ SMB         10.129.47.118   445    DC01             profiles$       READ
 SMB         10.129.47.118   445    DC01             SYSVOL                          Logon server share                                                                               
 ```
 
-First, we find out the NetBIOS name of the DC, **DC01**. We add it to our hosts file.
-Secondly, we see that null session authentication gives us "ACCESS DENIED", but a non-existent user  authenticates us as Guest with READ permissions on non-standard share **profiles$**.
+First, we find out the NetBIOS name of the DC, **DC01**. We add it to our hosts file.<br>
+Secondly, we see that null session authentication gives us "ACCESS DENIED", but a non-existent user  authenticates us as Guest with READ permissions on non-standard share **profiles$**.<br>
 
 We take a look at this share using NetExec's module Spider Plus:
 
@@ -138,7 +138,7 @@ SPIDER_PLUS 10.129.47.118   445    DC01             [*] Total files found:    0
 
 ## 3.1 Foothold as "support"
 
-**RID Bruteforce**
+**RID Bruteforce**<br>
 Before we proceed any further, we use NetExec's tool to enumerate usernames by bruteforcing RIDs:
 
 ```
@@ -180,8 +180,7 @@ SMB         10.129.47.118   445    DC01             1109: BLACKFIELD\BLACKFIELD7
 [SNIP]  
 ```
 
-This yields a long list of usernames, many of them with the format BLACKFIELD######. We generate a list of users.
-
+This yields a long list of usernames, many of them with the format BLACKFIELD######. We generate a list of users.<br>
 Let's see if any of them do not require preauthentication, which would make them vulnerable to an AS-REP Roasting attack. We use Impacket's GetNPUsers with our shiny new user list:
 
 ```
@@ -215,19 +214,17 @@ After just 10 seconds, we got the password! Let's see what we can do with it.
 
 ## 3.2 Compromising "audit2020"
 
-This user has access to two additional default shares, NETLOGON and SYSVOL, which can occasionally be useful. Sadly, no WinRM access just yet.
+This user has access to two additional default shares, NETLOGON and SYSVOL, which can occasionally be useful. Sadly, no WinRM access just yet.<br>
 More importantly, however, we now have access to a domain user, which means we can enumerate LDAP to get a layout of the domain. We use RustHound-CE for this:
 
 ```
 └─$ ./rusthound-ce --domain blacfield.local  -c All -f dc01.blackfield.local  -u support  -p '#00^BlackKnight'
 ```
 
-**ForceChangePassword**
-We fire up BloodHound and feed it the files.
+**ForceChangePassword**<br>
+We fire up BloodHound and feed it the files.<br>
 
-Checking the Outbound Object control of our compromised user, we see that it has ForceChangePassword rights over user **audit2020**:
-
-![[Pasted image 20251126044830.png]]
+Checking the Outbound Object control of our compromised user, we see that it has ForceChangePassword rights over user **audit2020*.<br>
 
 With BloodyAD, it is trivial to change this user's password to a known value:
 
@@ -264,9 +261,9 @@ And it does! Let's check out the **forensic** share:
 └─$ impacket-smbclient 'audit2020':'Welcome1!'@dc01.blackfield.local
 ```
 
-It contains many potentially interesting files. If I had to guess, they come from a previous pentest or security audit.
-Inside the memory analysis folder, a file stands out: **lsass.zip**. LSASS stands for Local Security Authority Subsystem Service.
-It goes without saying that this can be extremely sensitive.
+It contains many potentially interesting files. If I had to guess, they come from a previous pentest or security audit.<br>
+Inside the memory analysis folder, a file stands out: **lsass.zip**. LSASS stands for Local Security Authority Subsystem Service.<br>
+It goes without saying that this can be extremely sensitive.<br>
 
 We download, unzip, and check the file:
 ```
@@ -279,7 +276,7 @@ PypyKatz, Mimikatz' implementation in Python, can extract credentials from an LS
 
 ```└─$ pypykatz lsa minidump lsass.DMP ```
 
-This reveals a treasure trove of information, with information about logon sessions from several sensitive users.
+This reveals a treasure trove of information, with information about logon sessions from several sensitive users.<br>
 The password hashes for the accounts with the most privileges (Administrator and DC01$) are not working. The passwords were probably rotated after the security audit. But there's an NTLM hash for a user that might have been overlooked:
 
 ```FILE: ======== lsass.DMP =======
@@ -301,7 +298,7 @@ luid 406458
                 DPAPI: a03cd8e9d30171f3cfe8caad92fef62100000000
 ```
 
-If the username is accurate and this account is a member of Backup Operators, full compromise of the domain should be quite easy.
+If the username is accurate and this account is a member of Backup Operators, full compromise of the domain should be quite easy.<br>
 
 We try to pass the hash with NetExec and it works. And this time we finally have WinRM access!
 
@@ -368,7 +365,7 @@ This effectively entails write and read access to the entire disk.
 ## 4.2 SeBackupPrivilege
 
 [This](https://github.com/k4sth4/SeBackupPrivilege) Github repo contains step-by-step instructions on how to leverage **SeBackupPrivilege** to copy Windows registry hives and NTDS.dit, which would enable an offline DCSync attack to retrieve the Domain Admin hash (among other sensitive information).
-Let's start!
+Let's start!<br>
 
 We start by cloning the repo and uploading and importing the two DLLs we'll use to copy the files. EvilWinRM has a very nice upload feature for this purpose:
 
@@ -402,7 +399,7 @@ We need line endings to be Windows style (\r\n instead of \n):
 unix2dos: converting file vss.dsh to DOS format...
 ```
 
-And we upload it.
+And we upload it.<br>
 Now we use shadowdisk.exe to process the script and create and expose the volume shadow copy:
 
 ```
@@ -496,17 +493,17 @@ evil-winrm-py PS C:\Users\Administrator\Documents> type \users\administrator\des
 4375a629c7c67c8e29db269060c955cb
 ```
 
-And that's the box!
+And that's the box!<br>
 A good reminder to protect members of Backup Operators as if they were Domain Admins, since they can very easily compromise a DC.
 
 # Beyond Root
 
 ## SeRestorePrivilege
 
-On occasion, I have found that the Disk Shadow technique might not work on a specific host for a number of reasons. While we would still have read access to MOST files in the system, NTDS.dit would still be out of reach.
+On occasion, I have found that the Disk Shadow technique might not work on a specific host for a number of reasons. While we would still have read access to MOST files in the system, NTDS.dit would still be out of reach.<br>
 
-For cases like this, remember that as a member of Backup Operators you have another powerful privilege: SeRestorePrivilege.
-Full write access to the disk means that you can overwrite service binaries with a malicious binary that would grant you control over the host. Moreover, as a member of Backup Operators, you should have rights to stop and start a number of services.
-
+For cases like this, remember that as a member of Backup Operators you have another powerful privilege: SeRestorePrivilege.<br>
+Full write access to the disk means that you can overwrite service binaries with a malicious binary that would grant you control over the host. Moreover, as a member of Backup Operators, you should have rights to stop and start a number of services.<br>
+<br>
 If you want to try this, check out [this article](https://www.hackplayers.com/2020/06/backup-tosystem-abusando-de-los.html) by CyberVaca (in Spanish) and let me know how it went!
 
